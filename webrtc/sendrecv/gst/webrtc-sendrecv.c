@@ -349,12 +349,12 @@ start_pipeline (gboolean create_offer)
   pipe1 =
       gst_parse_launch ("webrtcbin bundle-policy=max-bundle name=sendrecv " 
       STUN_SERVER
-      "queue name=webvideoqueue ! videoconvert ! glimagesink render_rectangle=\"<0, 0, 1920, 1080>\" "
-      "queue name=webaudioqueue ! audioconvert ! audioresample ! autoaudiosink "
+      "queue name=webvideoqueue ! autovideosink "
+      "queue name=webaudioqueue ! audioconvert ! audioresample ! webrtcechoprobe ! alsasink buffer-time=30000 "
       "uvch264src name=src auto-start=true src.vidsrc ! "
       "video/x-h264,width=1280,height=720,framerate=30/1,profile=constrained-baseline ! h264parse ! rtph264pay config-interval=10 pt=96 ! "
       "queue ! " RTP_CAPS_H264 "96 ! sendrecv. "
-      "autoaudiosrc ! audioconvert ! audioresample ! queue ! opusenc audio-type=2048 ! rtpopuspay ! "
+      "alsasrc buffer-time=30000 !  webrtcdsp  noise-suppression-level=high echo-suppression-level=high ! audioconvert ! audioresample ! queue ! opusenc audio-type=2048 ! rtpopuspay ! "
       "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. ",
       &error);
 
