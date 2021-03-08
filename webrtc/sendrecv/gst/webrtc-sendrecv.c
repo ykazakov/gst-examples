@@ -110,53 +110,14 @@ get_string_from_json_object (JsonObject * object)
 }
 
 static void
-handle_media_stream (GstPad * pad, GstElement * pipe, const char *convert_name,
-    const char *sink_name)
-{
-  GstPad *qpad;
-  GstElement *q, *conv, *resample, *sink;
-  GstPadLinkReturn ret;
-
-  gst_println ("Trying to handle stream with %s ! %s", convert_name, sink_name);
-
-  q = gst_element_factory_make ("queue", NULL);
-  g_assert_nonnull (q);
-  conv = gst_element_factory_make (convert_name, NULL);
-  g_assert_nonnull (conv);
-  sink = gst_element_factory_make (sink_name, NULL);
-  g_assert_nonnull (sink);
-
-  if (g_strcmp0 (convert_name, "audioconvert") == 0) {
-    /* Might also need to resample, so add it just in case.
-     * Will be a no-op if it's not required. */
-    resample = gst_element_factory_make ("audioresample", NULL);
-    g_assert_nonnull (resample);
-    gst_bin_add_many (GST_BIN (pipe), q, conv, resample, sink, NULL);
-    gst_element_sync_state_with_parent (q);
-    gst_element_sync_state_with_parent (conv);
-    gst_element_sync_state_with_parent (resample);
-    gst_element_sync_state_with_parent (sink);
-    gst_element_link_many (q, conv, resample, sink, NULL);
-  } else {
-    gst_bin_add_many (GST_BIN (pipe), q, conv, sink, NULL);
-    gst_element_sync_state_with_parent (q);
-    gst_element_sync_state_with_parent (conv);
-    gst_element_sync_state_with_parent (sink);
-    gst_element_link_many (q, conv, sink, NULL);
-  }
-
-  qpad = gst_element_get_static_pad (q, "sink");
-
-  ret = gst_pad_link (pad, qpad);
-  g_assert_cmphex (ret, ==, GST_PAD_LINK_OK);
-}
-
-static void
 on_incoming_decodebin_stream (GstElement * decodebin, GstPad * pad,
     GstElement * pipe)
 {
   GstCaps *caps;
   const gchar *name;
+  GstPad *qpad;
+  GstElement *q;
+  GstPadLinkReturn ret;
 
   if (!gst_pad_has_current_caps (pad)) {
     gst_printerr ("Pad '%s' has no caps, can't do anything, ignoring\n",
@@ -168,12 +129,18 @@ on_incoming_decodebin_stream (GstElement * decodebin, GstPad * pad,
   name = gst_structure_get_name (gst_caps_get_structure (caps, 0));
 
   if (g_str_has_prefix (name, "video")) {
-    handle_media_stream (pad, pipe, "videoconvert", "autovideosink");
+    q = gst_bin_get_by_name (GST_BIN (pipe), "webvideoqueue"); 
   } else if (g_str_has_prefix (name, "audio")) {
-    handle_media_stream (pad, pipe, "audioconvert", "autoaudiosink");
+    q = gst_bin_get_by_name (GST_BIN (pipe), "webaudioqueue");
   } else {
     gst_printerr ("Unknown pad %s, ignoring", GST_PAD_NAME (pad));
   }
+
+  g_assert_nonnull (q);
+  qpad = gst_element_get_static_pad (q, "sink");
+  g_assert_nonnull (qpad);
+  ret = gst_pad_link (pad, qpad);
+  g_assert_cmphex (ret, ==, GST_PAD_LINK_OK); 
 }
 
 static void
@@ -300,6 +267,7 @@ on_negotiation_needed (GstElement * element, gpointer user_data)
 #define STUN_SERVER " stun-server=stun://stun.l.google.com:19302 "
 #define RTP_CAPS_OPUS "application/x-rtp,media=audio,encoding-name=OPUS,payload="
 #define RTP_CAPS_VP8 "application/x-rtp,media=video,encoding-name=VP8,payload="
+#define RTP_CAPS_H264 "application/x-rtp,media=video,encoding-name=H264,payload="
 
 static void
 data_channel_on_error (GObject * dc, gpointer user_data)
@@ -379,12 +347,16 @@ start_pipeline (gboolean create_offer)
   GError *error = NULL;
 
   pipe1 =
-      gst_parse_launch ("webrtcbin bundle-policy=max-bundle name=sendrecv "
+      gst_parse_launch ("webrtcbin bundle-policy=max-bundle name=sendrecv " 
       STUN_SERVER
-      "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
-      "queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
-      "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
-      "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. ", &error);
+      "queue name=webvideoqueue ! videoconvert ! glimagesink render_rectangle=\"<0, 0, 1920, 1080>\" "
+      "queue name=webaudioqueue ! audioconvert ! audioresample ! autoaudiosink "
+      "uvch264src name=src auto-start=true src.vidsrc ! "
+      "video/x-h264,width=1280,height=720,framerate=30/1,profile=constrained-baseline ! h264parse ! rtph264pay config-interval=10 pt=96 ! "
+      "queue ! " RTP_CAPS_H264 "96 ! sendrecv. "
+      "autoaudiosrc ! audioconvert ! audioresample ! queue ! opusenc audio-type=2048 ! rtpopuspay ! "
+      "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. ",
+      &error);
 
   if (error) {
     gst_printerr ("Failed to parse launch: %s\n", error->message);
@@ -799,7 +771,7 @@ check_plugins (void)
   gboolean ret;
   GstPlugin *plugin;
   GstRegistry *registry;
-  const gchar *needed[] = { "opus", "vpx", "nice", "webrtc", "dtls", "srtp",
+  const gchar *needed[] = { "opus", "nice", "webrtc", "dtls", "srtp",
     "rtpmanager", "videotestsrc", "audiotestsrc", NULL
   };
 
